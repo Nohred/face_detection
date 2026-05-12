@@ -1,9 +1,9 @@
 import pandas as pd
 import cv2
 import os
-from mtcnn.mtcnn import MTCNN
-from tensorflow.keras.models import load_model
-from functions import detect_faces, get_embedding
+import torch
+from facenet_pytorch import MTCNN
+from scripts.functions import detect_faces, get_embedding, load_facenet_model
 
 ### Construct paths to the dataset and the face detector model
 base_dir = os.path.join(os.getcwd())
@@ -19,10 +19,14 @@ class_image_paths = {
     if os.path.isdir(os.path.join(images_dir, clase))
 }
 
+# Determine default device
+device = torch.device('cpu')
+print(f"Running MTCNN on device: {device}")
+
 # Load MTCNN and FaceNet models
-detector = MTCNN()
+detector = MTCNN(keep_all=True, device=device)
 model_path = os.path.join(base_dir, 'model', 'facenet_keras.h5')
-model = load_model(model_path, compile=False)
+model = load_facenet_model(model_path)
 
 # Construct embeddings in a pandas DataFrame
 data = []

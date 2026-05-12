@@ -10,10 +10,11 @@ from socketserver import ThreadingMixIn
 import cv2
 import joblib
 import numpy as np
+import torch
+from facenet_pytorch import MTCNN
 
 # Reduce TF log noise (must be set before importing TF in some setups)
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-from tensorflow.keras.models import load_model
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -23,8 +24,10 @@ SCRIPTS_DIR = PROJECT_DIR / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from functions import detect_faces, find_camera_index, get_embedding
+from scripts.functions import detect_faces, find_camera_index, get_embedding, init_gpu, load_facenet_model
 
+# Initialize GPU to avoid out-of-memory errors
+init_gpu()
 
 INDEX_HTML_PATH = APP_DIR / "index.html"
 STYLE_CSS_PATH = APP_DIR / "style.css"
@@ -80,29 +83,6 @@ def sanitize_update(payload, current):
             payload.get("min_face_confidence"), 0.0, 1.0, updated["min_face_confidence"]
         )
 
-    if "camera_index" in payload:
-        raw = payload.get("camera_index")
-        if raw is None:
-            updated["camera_index"] = None
-        else:
-            raw_s = _safe_str(raw, "").strip()
-            if raw_s == "":
-                updated["camera_index"] = None
-            else:
-                try:
-                    updated["camera_index"] = int(raw_s)
-                except Exception:
-                    pass
-
-    if "frame_width" in payload:
-        updated["frame_width"] = _clamp_int(payload.get("frame_width"), 160, 1920, updated["frame_width"])
-
-    if "frame_height" in payload:
-        updated["frame_height"] = _clamp_int(payload.get("frame_height"), 120, 1080, updated["frame_height"])
-
-    if "capture_fps" in payload:
-        updated["capture_fps"] = _clamp_int(payload.get("capture_fps"), 1, 120, updated["capture_fps"])
-
     return updated
 
 
@@ -147,7 +127,7 @@ class CameraWorker:
         self._thread = None
 
         # Models/detectors are loaded once.
-        self._facenet = load_model(str(FACENET_MODEL_PATH), compile=False)
+        self._facenet = load_facenet_model(str(FACENET_MODEL_PATH))
         self._classifier = joblib.load(str(CLASSIFIER_PATH))
         self._label_encoder = joblib.load(str(LABEL_ENCODER_PATH))
 
@@ -156,9 +136,7 @@ class CameraWorker:
             raise RuntimeError("Failed to load OpenCV Haar cascade.")
 
         try:
-            from mtcnn.mtcnn import MTCNN
-
-            self._mtcnn = MTCNN()
+            self._mtcnn = MTCNN(keep_all=True, device=torch.device('cpu'))
         except Exception:
             self._mtcnn = None
 
@@ -185,13 +163,7 @@ class CameraWorker:
     def update_config(self, payload):
         with self._lock:
             new_config = sanitize_update(payload, self._config)
-
-            cap_affecting_keys = ("camera_index", "frame_width", "frame_height", "capture_fps")
-            cap_changed = any(new_config.get(k) != self._config.get(k) for k in cap_affecting_keys)
-
             self._config = new_config
-            if cap_changed:
-                self._cap_settings = None  # force reopen
 
             # Reset processing state so changes apply immediately
             self._frame_index = 0

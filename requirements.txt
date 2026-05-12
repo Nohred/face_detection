@@ -1,6 +1,15 @@
+# Install PyTorch with conda, not pip:
+# conda install -c pytorch -c nvidia pytorch torchvision torchaudio pytorch-cuda=11.8 -y
+# Keep the Intel runtime packages on the Conda side too:
+# conda install intel-openmp=2021.4.0 mkl=2021.4.0 mkl-service=2.4.0 -y
+
 tensorflow==2.10.1
 keras==2.10.0
-mtcnn==0.1.1
+facenet-pytorch==2.5.3
 opencv-python==4.8.1.78
-numpy==1.23.5
+numpy<2.0.0
 matplotlib==3.7.1
+pandas==2.2.3
+scikit-learn==1.7.2
+jupyter==1.1.1
+ipykernel==7.2.0

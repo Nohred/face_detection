@@ -1,25 +1,30 @@
-from functions import detect_faces, get_embedding, find_camera_index
-from tensorflow.keras.models import load_model
+from functions import detect_faces, get_embedding, find_camera_index, init_gpu, load_facenet_model
+import torch
+from facenet_pytorch import MTCNN
 import joblib
 import numpy as np
 import os
 import cv2
 import time
+import tensorflow as tf
 
-
-
+# Initialize GPU to avoid out-of-memory errors
+init_gpu()
 
 # Performance knobs (can be overridden via env vars)
 FACE_DETECTOR_BACKEND = 'haar'  # mtcnn | haar
 DETECTION_SCALE = 0.5  # only for mtcnn (0 < scale <= 1)
 MIN_FACE_CONFIDENCE = 0.8  # only for mtcnn
-MAX_FACES = 2
+MAX_FACES = 1
 PROCESS_EVERY_N_FRAMES = 5 
 
 # Load FaceNet model
 base_dir = os.path.join(os.getcwd())
-model_path = os.path.join(base_dir, 'model', 'facenet_keras.h5')
-model = load_model(model_path, compile=False)
+# model_path = os.path.join(base_dir, 'model', 'facenet_keras.h5')
+model_path = os.path.join(base_dir, 'model', 'facenet_keras_2024.h5')
+model = load_facenet_model(model_path)
+# Run keras on cpu to avoid CUDA graph compilation issues (e.g., cuDNN version mismatch)
+model.run_eagerly = True
 
 # Load face detector
 if FACE_DETECTOR_BACKEND == 'haar':
@@ -27,15 +32,39 @@ if FACE_DETECTOR_BACKEND == 'haar':
     if detector.empty():
         raise RuntimeError('Failed to load OpenCV Haar cascade for face detection.')
 else:
-    from mtcnn.mtcnn import MTCNN
     FACE_DETECTOR_BACKEND = 'mtcnn'
-    detector = MTCNN()
+    # facenet-pytorch on CUDA is unstable in this environment; use CPU for detection.
+    mtcnn_device = torch.device('cpu')
+    try:
+        detector = MTCNN(keep_all=True, device=mtcnn_device)
+    except Exception as exc:
+        print(f'Falling back to Haar detector because MTCNN could not be initialized: {exc}')
+        FACE_DETECTOR_BACKEND = 'haar'
+        detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        if detector.empty():
+            raise RuntimeError('Failed to load OpenCV Haar cascade for face detection.')
 
 if FACE_DETECTOR_BACKEND == 'mtcnn':
     # Clamp to sane values to avoid accidental slowdowns or errors
     DETECTION_SCALE = max(0.1, min(1.0, float(DETECTION_SCALE)))
 else:
     DETECTION_SCALE = 1.0
+
+
+# Desactivar XLA/JIT para evitar el error de BatchNormalization en GPU
+try:
+    tf.config.optimizer.set_jit(False)
+except Exception:
+    pass
+
+# # Forzar predict_on_batch a ejecutarse en CPU
+_original_predict_on_batch = tf.keras.Model.predict_on_batch
+
+def _predict_on_batch_cpu(self, x):
+    with tf.device('/CPU:0'):
+        return _original_predict_on_batch(self, x)
+
+tf.keras.Model.predict_on_batch = _predict_on_batch_cpu
 
 # Load the trained classifier
 classifier_path = os.path.join(base_dir, 'model', 'face_classifier.joblib')
@@ -50,15 +79,14 @@ os.system('clear')
 
 print("Starting webcam face recognition. Press 'q' to quit.")
 
-camera_index = find_camera_index()
-if camera_index is None:
-    print("No webcam could be opened. Available /dev/video devices on this machine may not match OpenCV indices.")
-    print("Try setting CAMERA_INDEX to the correct index, for example:")
-    print("CAMERA_INDEX=1 python scripts/camera.py")
-    raise SystemExit(1)
 
-print(f"Using camera index {camera_index}")
-cap = cv2.VideoCapture(camera_index)
+cap = cv2.VideoCapture(1)
+ret, frame = cap.read()
+if not ret:
+    wait_time = 3
+    print(f"Failed to access webcam at index 1. Retrying in {wait_time} seconds...")
+    time.sleep(wait_time)
+    cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 cap.set(cv2.CAP_PROP_FPS, 30)

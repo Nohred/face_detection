@@ -1,17 +1,62 @@
 import numpy as np
 import cv2
+import importlib
 import os
+import tensorflow as tf
+from facenet_pytorch import MTCNN
+import inspect
+import torch
 
+
+def _resolve_load_model():
+    for module_name in ("keras.models", "tensorflow.keras.models"):
+        try:
+            module = importlib.import_module(module_name)
+            return module.load_model
+        except Exception:
+            continue
+    raise ImportError("Could not import a Keras load_model implementation.")
+
+
+keras_load_model = _resolve_load_model()
+
+def init_gpu():
+    """Configure TensorFlow to use GPU with memory growth to avoid locking all VRAM.
+    
+    Falls back to CPU if CUDA compilation fails (e.g., cuDNN version mismatch).
+    """
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"GPU detectada y configurada: {[g.name for g in gpus]}")
+        except RuntimeError as e:
+            print(f"Error inicializando GPU: {e}")
+            print("Usando CPU para inference")
+    else:
+        print("No se encontró GPU compatible con TensorFlow. Ejecutando en CPU.")
 
 ### Detect faces in an image using MTCNN
 def detect_faces(detector, image, backend="mtcnn", min_confidence=None):
     backend = (backend or "mtcnn").lower().strip()
 
     if backend == "mtcnn":
-        results = detector.detect_faces(image)
-        if min_confidence is not None:
-            results = [r for r in results if r.get('confidence', 0.0) >= float(min_confidence)]
-        return results  # bbox, confidence, keypoints
+        # detector.detect from facenet-pytorch returns boxes and probabilities
+        boxes, probs = detector.detect(image)
+        results = []
+        if boxes is not None:
+            for box, prob in zip(boxes, probs):
+                if min_confidence is not None and prob < min_confidence:
+                    continue
+                x1, y1, x2, y2 = [int(b) for b in box]
+                width, height = x2 - x1, y2 - y1
+                # Format to match OpenCV/MTCNN classic layout
+                results.append({
+                    'box': [max(0, x1), max(0, y1), width, height],
+                    'confidence': prob
+                })
+        return results  # list of dicts with 'box' and 'confidence'
 
     if backend == "haar":
         # OpenCV Haar expects grayscale
@@ -34,6 +79,28 @@ def detect_faces(detector, image, backend="mtcnn", min_confidence=None):
         ]
 
     raise ValueError(f"Unsupported backend '{backend}'. Use 'mtcnn' or 'haar'.")
+
+
+def load_facenet_model(model_path):
+    load_kwargs = {"compile": False}
+
+    try:
+        if "safe_mode" in inspect.signature(keras_load_model).parameters:
+            load_kwargs["safe_mode"] = False
+    except Exception:
+        pass
+
+    try:
+        model = keras_load_model(model_path, **load_kwargs)
+    except TypeError:
+        load_kwargs.pop("safe_mode", None)
+        model = keras_load_model(model_path, **load_kwargs)
+    
+    # Use eager execution to avoid CUDA graph compilation errors (e.g., cuDNN version mismatch)
+    # This is slower but more compatible across CUDA environments
+    model.run_eagerly = True
+    
+    return model
 
 ### Get embeddings from FaceNet
 def get_embedding(model, face_pixels):
