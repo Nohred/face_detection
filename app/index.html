@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Webcam Face Recognition (Local)</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div>
+        <h1>Webcam Face Recognition</h1>
+        <p class="sub">Aplicación local • Stream MJPEG</p>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="video">
+        <img id="stream" src="/video" alt="Webcam stream" />
+      </section>
+
+      <section class="panel">
+        <h2>Parámetros</h2>
+        <form id="paramsForm" autocomplete="off">
+          <label class="field">
+            <span class="label">Detector</span>
+            <select id="face_detector" name="face_detector">
+              <option value="haar">haar</option>
+              <option value="mtcnn">mtcnn</option>
+            </select>
+          </label>
+
+          <div class="grid2">
+            <label class="field">
+              <span class="label">Procesar cada N frames</span>
+              <input id="process_every_n_frames" name="process_every_n_frames" type="number" min="1" step="1" />
+            </label>
+
+            <label class="field">
+              <span class="label">Max caras</span>
+              <input id="max_faces" name="max_faces" type="number" min="0" step="1" />
+            </label>
+          </div>
+
+          <fieldset id="mtcnnOnly" class="fieldset">
+            <legend>Solo MTCNN</legend>
+
+            <div class="grid2">
+              <label class="field">
+                <span class="label">Detection scale (0.1–1.0)</span>
+                <input id="detection_scale" name="detection_scale" type="number" min="0.1" max="1" step="0.05" />
+              </label>
+
+              <label class="field">
+                <span class="label">Min confidence (0–1)</span>
+                <input id="min_face_confidence" name="min_face_confidence" type="number" min="0" max="1" step="0.01" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="fieldset">
+            <legend>Cámara</legend>
+
+            <label class="field">
+              <span class="label">Índice (vacío = auto)</span>
+              <input id="camera_index" name="camera_index" type="text" inputmode="numeric" placeholder="auto" />
+            </label>
+
+            <div class="grid2">
+              <label class="field">
+                <span class="label">Width</span>
+                <input id="frame_width" name="frame_width" type="number" min="160" step="1" />
+              </label>
+
+              <label class="field">
+                <span class="label">Height</span>
+                <input id="frame_height" name="frame_height" type="number" min="120" step="1" />
+              </label>
+            </div>
+
+            <label class="field">
+              <span class="label">Capture FPS (best effort)</span>
+              <input id="capture_fps" name="capture_fps" type="number" min="1" step="1" />
+            </label>
+          </fieldset>
+
+          <div class="actions">
+            <button type="submit">Aplicar</button>
+            <button id="reloadBtn" type="button">Recargar</button>
+          </div>
+
+          <p id="status" class="status" role="status"></p>
+        </form>
+
+        <details class="help">
+          <summary>Tips para rendimiento</summary>
+          <div class="helpBody">
+            <p><b>MTCNN</b>: prueba N=3..5, scale=0.5 y max_faces=1.</p>
+            <p><b>Haar</b>: prueba N=2..3 y max_faces=1.</p>
+          </div>
+        </details>
+      </section>
+    </main>
+
+    <script>
+      const els = {
+        form: document.getElementById('paramsForm'),
+        status: document.getElementById('status'),
+        reloadBtn: document.getElementById('reloadBtn'),
+        face_detector: document.getElementById('face_detector'),
+        process_every_n_frames: document.getElementById('process_every_n_frames'),
+        max_faces: document.getElementById('max_faces'),
+        detection_scale: document.getElementById('detection_scale'),
+        min_face_confidence: document.getElementById('min_face_confidence'),
+        camera_index: document.getElementById('camera_index'),
+        frame_width: document.getElementById('frame_width'),
+        frame_height: document.getElementById('frame_height'),
+        capture_fps: document.getElementById('capture_fps'),
+        mtcnnOnly: document.getElementById('mtcnnOnly'),
+      };
+
+      function setStatus(msg, isError = false) {
+        els.status.textContent = msg;
+        els.status.dataset.kind = isError ? 'error' : 'ok';
+      }
+
+      function updateMtcnnVisibility() {
+        const backend = els.face_detector.value;
+        els.mtcnnOnly.style.display = backend === 'mtcnn' ? 'block' : 'none';
+      }
+
+      function setFormValues(p) {
+        els.face_detector.value = p.face_detector;
+        els.process_every_n_frames.value = p.process_every_n_frames;
+        els.max_faces.value = p.max_faces;
+        els.detection_scale.value = p.detection_scale;
+        els.min_face_confidence.value = p.min_face_confidence;
+        els.camera_index.value = (p.camera_index === null || p.camera_index === undefined) ? '' : String(p.camera_index);
+        els.frame_width.value = p.frame_width;
+        els.frame_height.value = p.frame_height;
+        els.capture_fps.value = p.capture_fps;
+        updateMtcnnVisibility();
+      }
+
+      function readFormValues() {
+        return {
+          face_detector: els.face_detector.value,
+          process_every_n_frames: Number(els.process_every_n_frames.value),
+          max_faces: Number(els.max_faces.value),
+          detection_scale: Number(els.detection_scale.value),
+          min_face_confidence: Number(els.min_face_confidence.value),
+          camera_index: els.camera_index.value.trim(),
+          frame_width: Number(els.frame_width.value),
+          frame_height: Number(els.frame_height.value),
+          capture_fps: Number(els.capture_fps.value),
+        };
+      }
+
+      async function fetchParams() {
+        const res = await fetch('/api/params', { cache: 'no-store' });
+        if (!res.ok) throw new Error('No se pudo leer /api/params');
+        return await res.json();
+      }
+
+      async function applyParams(payload) {
+        const res = await fetch('/api/params', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || 'Error al aplicar parámetros');
+        }
+        return await res.json();
+      }
+
+      document.addEventListener('DOMContentLoaded', async () => {
+        els.face_detector.addEventListener('change', updateMtcnnVisibility);
+
+        els.reloadBtn.addEventListener('click', async () => {
+          try {
+            setStatus('Recargando...');
+            const p = await fetchParams();
+            setFormValues(p);
+            setStatus('Listo');
+          } catch (e) {
+            setStatus(String(e), true);
+          }
+        });
+
+        els.form.addEventListener('submit', async (ev) => {
+          ev.preventDefault();
+          try {
+            setStatus('Aplicando...');
+            const payload = readFormValues();
+            const p = await applyParams(payload);
+            setFormValues(p);
+            setStatus('Aplicado');
+          } catch (e) {
+            setStatus(String(e), true);
+          }
+        });
+
+        try {
+          const p = await fetchParams();
+          setFormValues(p);
+          setStatus('Listo');
+        } catch (e) {
+          setStatus(String(e), true);
+        }
+      });
+    </script>
+  </body>
+</html>
