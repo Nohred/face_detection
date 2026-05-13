@@ -13,6 +13,12 @@ df = pd.read_csv(embeddings_path, converters={'embedding': lambda x: np.fromstri
 
 X = np.array(df['embedding'].tolist())
 y = df['class'].values
+
+# Print class distribution
+print("Class distribution:")
+print(df['class'].value_counts())
+
+
 label_encoder = LabelEncoder()
 y_encoded = label_encoder.fit_transform(y)
 

@@ -3,20 +3,30 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Webcam Face Recognition (Local)</title>
+    <title>Webcam Face Recognition</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
     <header class="header">
       <div>
         <h1>Webcam Face Recognition</h1>
-        <p class="sub">Aplicación local • Stream MJPEG</p>
+        <p class="sub">Cámara del navegador • Procesamiento en el servidor</p>
       </div>
     </header>
 
     <main class="layout">
       <section class="video">
-        <img id="stream" src="/video" alt="Webcam stream" />
+        <div class="streamGrid">
+          <article class="streamCard">
+            <div class="streamLabel">Cámara del navegador</div>
+            <video id="cameraPreview" autoplay playsinline muted></video>
+          </article>
+
+          <article class="streamCard">
+            <div class="streamLabel">Vista procesada</div>
+            <img id="stream" src="/video" alt="Webcam stream" />
+          </article>
+        </div>
       </section>
 
       <section class="panel">
@@ -42,18 +52,18 @@
             </label>
           </div>
 
-          <fieldset id="mtcnnOnly" class="fieldset">
-            <legend>Solo MTCNN</legend>
+          <fieldset class="fieldset">
+            <legend>Apariencia</legend>
 
             <div class="grid2">
               <label class="field">
-                <span class="label">Detection scale (0.1–1.0)</span>
-                <input id="detection_scale" name="detection_scale" type="number" min="0.1" max="1" step="0.05" />
+                <span class="label">Color</span>
+                <input id="draw_color" name="draw_color" type="color" value="#00FF00" />
               </label>
 
               <label class="field">
-                <span class="label">Min confidence (0–1)</span>
-                <input id="min_face_confidence" name="min_face_confidence" type="number" min="0" max="1" step="0.01" />
+                <span class="label">Grosor (1-10)</span>
+                <input id="draw_thickness" name="draw_thickness" type="number" min="1" max="10" step="1" value="2" />
               </label>
             </div>
           </fieldset>
@@ -69,8 +79,8 @@
         <details class="help">
           <summary>Pre-set</summary>
           <div class="helpBody">
-            <p><b>MTCNN</b>: prueba N=3..5, scale=0.5 y max_faces=1.</p>
-            <p><b>Haar</b>: prueba N=2..3 y max_faces=1.</p>
+            <p><b>MTCNN</b>: Red neuronal muy precisa pero lenta.</p>
+            <p><b>Haar</b>: Algoritmo clásico, muy rápido pero menos preciso.</p>
           </div>
         </details>
       </section>
@@ -81,13 +91,19 @@
         form: document.getElementById('paramsForm'),
         status: document.getElementById('status'),
         reloadBtn: document.getElementById('reloadBtn'),
+        cameraPreview: document.getElementById('cameraPreview'),
         face_detector: document.getElementById('face_detector'),
         process_every_n_frames: document.getElementById('process_every_n_frames'),
         max_faces: document.getElementById('max_faces'),
-        detection_scale: document.getElementById('detection_scale'),
-        min_face_confidence: document.getElementById('min_face_confidence'),
-        mtcnnOnly: document.getElementById('mtcnnOnly'),
+        draw_color: document.getElementById('draw_color'),
+        draw_thickness: document.getElementById('draw_thickness'),
       };
+
+      const captureCanvas = document.createElement('canvas');
+      const captureContext = captureCanvas.getContext('2d', { willReadFrequently: false });
+      let cameraStream = null;
+      let captureTimer = null;
+      let sendingFrame = false;
 
       function setStatus(msg, isError = false) {
         els.status.textContent = msg;
@@ -95,17 +111,15 @@
       }
 
       function updateMtcnnVisibility() {
-        const backend = els.face_detector.value;
-        els.mtcnnOnly.style.display = backend === 'mtcnn' ? 'block' : 'none';
+        // No longer needed
       }
 
       function setFormValues(p) {
         els.face_detector.value = p.face_detector;
         els.process_every_n_frames.value = p.process_every_n_frames;
         els.max_faces.value = p.max_faces;
-        els.detection_scale.value = p.detection_scale;
-        els.min_face_confidence.value = p.min_face_confidence;
-        updateMtcnnVisibility();
+        if(p.draw_color) els.draw_color.value = p.draw_color;
+        if(p.draw_thickness) els.draw_thickness.value = p.draw_thickness;
       }
 
       function readFormValues() {
@@ -113,8 +127,8 @@
           face_detector: els.face_detector.value,
           process_every_n_frames: Number(els.process_every_n_frames.value),
           max_faces: Number(els.max_faces.value),
-          detection_scale: Number(els.detection_scale.value),
-          min_face_confidence: Number(els.min_face_confidence.value)
+          draw_color: els.draw_color.value,
+          draw_thickness: Number(els.draw_thickness.value)
         };
       }
 
@@ -137,9 +151,83 @@
         return await res.json();
       }
 
-      document.addEventListener('DOMContentLoaded', async () => {
-        els.face_detector.addEventListener('change', updateMtcnnVisibility);
+      async function sendCurrentFrame() {
+        if (!cameraStream || sendingFrame) return;
 
+        const video = els.cameraPreview;
+        if (!video.videoWidth || !video.videoHeight) return;
+
+        sendingFrame = true;
+        try {
+          captureCanvas.width = video.videoWidth;
+          captureCanvas.height = video.videoHeight;
+          captureContext.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
+
+          const blob = await new Promise((resolve) => captureCanvas.toBlob(resolve, 'image/jpeg', 0.82));
+          if (!blob) return;
+
+          const res = await fetch('/api/frame', {
+            method: 'POST',
+            headers: { 'Content-Type': 'image/jpeg' },
+            body: blob,
+          });
+
+          if (!res.ok) {
+            throw new Error('No se pudo enviar un frame al servidor');
+          }
+        } finally {
+          sendingFrame = false;
+        }
+      }
+
+      async function startCamera() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          setStatus('El navegador no soporta acceso a cámara', true);
+          return;
+        }
+
+        try {
+          cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: 'user',
+              width: { ideal: 640 },
+              height: { ideal: 480 },
+            },
+            audio: false,
+          });
+
+          els.cameraPreview.srcObject = cameraStream;
+          await els.cameraPreview.play();
+
+          if (captureTimer) {
+            clearInterval(captureTimer);
+          }
+
+          captureTimer = setInterval(() => {
+            sendCurrentFrame().catch((error) => {
+              setStatus(String(error), true);
+            });
+          }, 180);
+
+          setStatus('Cámara del navegador activa');
+        } catch (error) {
+          setStatus(String(error), true);
+        }
+      }
+
+      function stopCamera() {
+        if (captureTimer) {
+          clearInterval(captureTimer);
+          captureTimer = null;
+        }
+
+        if (cameraStream) {
+          cameraStream.getTracks().forEach((track) => track.stop());
+          cameraStream = null;
+        }
+      }
+
+      document.addEventListener('DOMContentLoaded', async () => {
         els.reloadBtn.addEventListener('click', async () => {
           try {
             setStatus('Recargando...');
@@ -171,7 +259,11 @@
         } catch (e) {
           setStatus(String(e), true);
         }
+
+        startCamera();
       });
+
+      window.addEventListener('beforeunload', stopCamera);
     </script>
   </body>
 </html>

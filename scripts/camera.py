@@ -1,6 +1,6 @@
-from functions import detect_faces, get_embedding, find_camera_index, init_gpu, load_facenet_model
+from functions import detect_faces, get_embedding, get_color
 import torch
-from facenet_pytorch import MTCNN
+from facenet_pytorch import MTCNN, InceptionResnetV1
 import joblib
 import numpy as np
 import os
@@ -8,63 +8,32 @@ import cv2
 import time
 import tensorflow as tf
 
-# Initialize GPU to avoid out-of-memory errors
-init_gpu()
+# Initialize camera
+camera_index = 1
+cap = cv2.VideoCapture(camera_index)
+
+# Initialize GPU
+device = (torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'))
 
 # Performance knobs (can be overridden via env vars)
-FACE_DETECTOR_BACKEND = 'haar'  # mtcnn | haar
-DETECTION_SCALE = 0.5  # only for mtcnn (0 < scale <= 1)
-MIN_FACE_CONFIDENCE = 0.8  # only for mtcnn
-MAX_FACES = 1
-PROCESS_EVERY_N_FRAMES = 5 
+FACE_DETECTOR_BACKEND = 'mtcnn'  # mtcnn | haar
+MAX_FACES = 2
+PROCESS_EVERY_N_FRAMES = 1 
 
-# Load FaceNet model
-base_dir = os.path.join(os.getcwd())
-# model_path = os.path.join(base_dir, 'model', 'facenet_keras.h5')
-model_path = os.path.join(base_dir, 'model', 'facenet_keras_2024.h5')
-model = load_facenet_model(model_path)
-# Run keras on cpu to avoid CUDA graph compilation issues (e.g., cuDNN version mismatch)
-model.run_eagerly = True
+# Color for drawing bounding boxes and labels
+color = get_color("#EEFF00")  # Green for recognized faces
+thickness = 1
 
 # Load face detector
 if FACE_DETECTOR_BACKEND == 'haar':
     detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    if detector.empty():
-        raise RuntimeError('Failed to load OpenCV Haar cascade for face detection.')
 else:
     FACE_DETECTOR_BACKEND = 'mtcnn'
-    # facenet-pytorch on CUDA is unstable in this environment; use CPU for detection.
-    mtcnn_device = torch.device('cpu')
-    try:
-        detector = MTCNN(keep_all=True, device=mtcnn_device)
-    except Exception as exc:
-        print(f'Falling back to Haar detector because MTCNN could not be initialized: {exc}')
-        FACE_DETECTOR_BACKEND = 'haar'
-        detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        if detector.empty():
-            raise RuntimeError('Failed to load OpenCV Haar cascade for face detection.')
-
-if FACE_DETECTOR_BACKEND == 'mtcnn':
-    # Clamp to sane values to avoid accidental slowdowns or errors
-    DETECTION_SCALE = max(0.1, min(1.0, float(DETECTION_SCALE)))
-else:
-    DETECTION_SCALE = 1.0
+    detector = MTCNN(keep_all=True, device=device)
 
 
-# Desactivar XLA/JIT para evitar el error de BatchNormalization en GPU
-try:
-    tf.config.optimizer.set_jit(False)
-except Exception:
-    pass
-
-# # Forzar predict_on_batch a ejecutarse en CPU
-_original_predict_on_batch = tf.keras.Model.predict_on_batch
-
-def _predict_on_batch_cpu(self, x):
-    with tf.device('/CPU:0'):
-        return _original_predict_on_batch(self, x)
-
-tf.keras.Model.predict_on_batch = _predict_on_batch_cpu
+# Base directory
+base_dir = os.path.join(os.getcwd())
 
 # Load the trained classifier
 classifier_path = os.path.join(base_dir, 'model', 'face_classifier.joblib')
@@ -74,19 +43,24 @@ classifier = joblib.load(classifier_path)
 label_encoder_path = os.path.join(base_dir, 'model', 'label_encoder.joblib')
 label_encoder = joblib.load(label_encoder_path)
 
+# Load FaceNet model
+resnet = InceptionResnetV1(pretrained='vggface2').eval()
+resnet = resnet.to(device) # Move model to device
+
 #clear the console
 os.system('clear')
 
 print("Starting webcam face recognition. Press 'q' to quit.")
 
 
-cap = cv2.VideoCapture(1)
 ret, frame = cap.read()
-if not ret:
-    wait_time = 3
-    print(f"Failed to access webcam at index 1. Retrying in {wait_time} seconds...")
+while not ret:
+    wait_time = 2
+    print(f"Failed to access webcam at index {camera_index}. Retrying in {wait_time} seconds...")
+    cap.release()
     time.sleep(wait_time)
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(camera_index)
+    ret, frame = cap.read()
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 cap.set(cv2.CAP_PROP_FPS, 30)
@@ -114,52 +88,28 @@ while True:
         cached_predictions = []
 
         # Detect faces
-        if FACE_DETECTOR_BACKEND == 'mtcnn':
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            if DETECTION_SCALE < 1.0:
-                small_rgb = cv2.resize(
-                    frame_rgb,
-                    (0, 0),
-                    fx=DETECTION_SCALE,
-                    fy=DETECTION_SCALE,
-                    interpolation=cv2.INTER_LINEAR,
-                )
-                faces = detect_faces(detector, small_rgb, backend='mtcnn', min_confidence=MIN_FACE_CONFIDENCE)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+ 
+        faces = detect_faces(detector, frame_rgb, backend=FACE_DETECTOR_BACKEND)
 
-                inv = 1.0 / DETECTION_SCALE
-                for face in faces:
-                    x, y, w, h = face.get('box', (0, 0, 0, 0))
-                    face['box'] = [int(x * inv), int(y * inv), int(w * inv), int(h * inv)]
-            else:
-                faces = detect_faces(detector, frame_rgb, backend='mtcnn', min_confidence=MIN_FACE_CONFIDENCE)
-        else:
-            frame_rgb = None
-            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = detect_faces(detector, frame_gray, backend='haar')
-
-        if MAX_FACES > 0 and len(faces) > MAX_FACES:
+        # Filter max faces
+        if len(faces) > MAX_FACES:
             faces = sorted(faces, key=lambda f: f['box'][2] * f['box'][3], reverse=True)[:MAX_FACES]
 
+        # Get embeddings and predict classes
+        
         for face in faces:
-            x, y, width, height = face['box']
-
-            # Clip bbox to image bounds (MTCNN can return negative coords)
-            x1 = max(0, int(x))
-            y1 = max(0, int(y))
-            x2 = min(img_w, x1 + max(0, int(width)))
-            y2 = min(img_h, y1 + max(0, int(height)))
+            x, y, w, h = face['box']
+            x1 = max(0, int(x)); y1 = max(0, int(y))
+            x2 = min(img_w, x1 + max(1, int(w))); y2 = min(img_h, y1 + max(1, int(h)))
             if x2 <= x1 or y2 <= y1:
                 continue
 
-            if frame_rgb is not None:
-                face_pixels = frame_rgb[y1:y2, x1:x2]
-            else:
-                face_bgr = frame[y1:y2, x1:x2]
-                face_pixels = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
+            image_bgr = frame
+            face_bgr = image_bgr[y1:y2, x1:x2]
+            face_rgb = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
+            embedding = get_embedding(resnet, device, face_rgb)
 
-            embedding = get_embedding(model, face_pixels)
-            if embedding is None:
-                continue
             embedding_reshaped = embedding.reshape(1, -1)
 
             probabilities = classifier.predict_proba(embedding_reshaped)[0]
@@ -170,15 +120,15 @@ while True:
             cached_predictions.append((x1, y1, x2, y2, predicted_class_label, confidence))
 
     for (x1, y1, x2, y2, predicted_class_label, confidence) in cached_predictions:
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
         cv2.putText(
             frame,
             f"{predicted_class_label} ({confidence:.2f})",
             (x1, y1 - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.9,
-            (0, 255, 0),
-            2,
+            color,
+            thickness
         )
     
     #Put real fps on the frame
@@ -188,7 +138,7 @@ while True:
         fps = frame_count / elapsed_time
         frame_count = 0
         start_time = time.perf_counter()
-    cv2.putText(frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+    cv2.putText(frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, thickness)
     cv2.imshow('Webcam Face Recognition', frame)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):

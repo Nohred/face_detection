@@ -11,7 +11,7 @@ import cv2
 import joblib
 import numpy as np
 import torch
-from facenet_pytorch import MTCNN
+from facenet_pytorch import InceptionResnetV1, MTCNN
 
 # Reduce TF log noise (must be set before importing TF in some setups)
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
@@ -19,15 +19,10 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
-SCRIPTS_DIR = PROJECT_DIR / "scripts"
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-from scripts.functions import detect_faces, find_camera_index, get_embedding, init_gpu, load_facenet_model
-
-# Initialize GPU to avoid out-of-memory errors
-init_gpu()
+from scripts.functions import detect_faces, find_camera_index, get_color, get_embedding
 
 INDEX_HTML_PATH = APP_DIR / "index.html"
 STYLE_CSS_PATH = APP_DIR / "style.css"
@@ -35,6 +30,7 @@ STYLE_CSS_PATH = APP_DIR / "style.css"
 FACENET_MODEL_PATH = PROJECT_DIR / "model" / "facenet_keras.h5"
 CLASSIFIER_PATH = PROJECT_DIR / "model" / "face_classifier.joblib"
 LABEL_ENCODER_PATH = PROJECT_DIR / "model" / "label_encoder.joblib"
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _clamp_float(value, lo, hi, default):
@@ -75,13 +71,11 @@ def sanitize_update(payload, current):
     if "max_faces" in payload:
         updated["max_faces"] = _clamp_int(payload.get("max_faces"), 0, 20, updated["max_faces"])
 
-    if "detection_scale" in payload:
-        updated["detection_scale"] = _clamp_float(payload.get("detection_scale"), 0.1, 1.0, updated["detection_scale"])
+    if "draw_color" in payload:
+        updated["draw_color"] = _safe_str(payload.get("draw_color"), updated["draw_color"])
 
-    if "min_face_confidence" in payload:
-        updated["min_face_confidence"] = _clamp_float(
-            payload.get("min_face_confidence"), 0.0, 1.0, updated["min_face_confidence"]
-        )
+    if "draw_thickness" in payload:
+        updated["draw_thickness"] = _clamp_int(payload.get("draw_thickness"), 1, 10, updated["draw_thickness"])
 
     return updated
 
@@ -104,14 +98,16 @@ class CameraWorker:
             "frame_height": 480,
             "capture_fps": 30,
             "face_detector": "haar",
-            "detection_scale": 0.5,
-            "min_face_confidence": 0.90,
             "max_faces": 5,
             "process_every_n_frames": 1,
+            "draw_color": "#00FF00",
+            "draw_thickness": 2,
         }
 
         self._latest_jpeg = None
         self._frame_id = 0
+        self._browser_frame = None
+        self._browser_frame_id = 0
 
         self._cap = None
         self._cap_settings = None
@@ -127,7 +123,7 @@ class CameraWorker:
         self._thread = None
 
         # Models/detectors are loaded once.
-        self._facenet = load_facenet_model(str(FACENET_MODEL_PATH))
+        self._facenet = InceptionResnetV1(pretrained="vggface2").eval().to(DEVICE)
         self._classifier = joblib.load(str(CLASSIFIER_PATH))
         self._label_encoder = joblib.load(str(LABEL_ENCODER_PATH))
 
@@ -136,7 +132,7 @@ class CameraWorker:
             raise RuntimeError("Failed to load OpenCV Haar cascade.")
 
         try:
-            self._mtcnn = MTCNN(keep_all=True, device=torch.device('cpu'))
+            self._mtcnn = MTCNN(keep_all=True, device=DEVICE)
         except Exception:
             self._mtcnn = None
 
@@ -145,6 +141,13 @@ class CameraWorker:
             return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    def submit_frame(self, frame_bgr):
+        with self._lock:
+            self._browser_frame = frame_bgr.copy()
+            self._browser_frame_id += 1
+            self._capture_error = None
+            self._cond.notify_all()
 
     def stop(self):
         self._stop.set()
@@ -218,56 +221,54 @@ class CameraWorker:
 
     def _detect_faces(self, frame_bgr, config):
         backend = config["face_detector"]
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
         if backend == "mtcnn":
             if self._mtcnn is None:
                 return [], None
-
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            scale = float(config["detection_scale"])
-            scale = max(0.1, min(1.0, scale))
-
-            if scale < 1.0:
-                small_rgb = cv2.resize(frame_rgb, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
-                faces = detect_faces(self._mtcnn, small_rgb, backend="mtcnn", min_confidence=config["min_face_confidence"])
-
-                inv = 1.0 / scale
-                for face in faces:
-                    x, y, w, h = face.get("box", (0, 0, 0, 0))
-                    face["box"] = [int(x * inv), int(y * inv), int(w * inv), int(h * inv)]
-            else:
-                faces = detect_faces(self._mtcnn, frame_rgb, backend="mtcnn", min_confidence=config["min_face_confidence"])
-
+            faces = detect_faces(self._mtcnn, frame_rgb, backend="mtcnn")
             return faces, frame_rgb
 
         # Haar
-        frame_gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-        faces = detect_faces(self._haar, frame_gray, backend="haar")
-        return faces, None
+        faces = detect_faces(self._haar, frame_rgb, backend="haar")
+        return faces, frame_rgb
 
     def _run(self):
+        last_browser_frame_id = 0
+
         while not self._stop.is_set():
             with self._lock:
                 config = dict(self._config)
 
-            self._open_capture_if_needed(config)
+                if self._browser_frame_id != last_browser_frame_id and self._browser_frame is not None:
+                    frame = self._browser_frame.copy()
+                    browser_frame_id = self._browser_frame_id
+                else:
+                    frame = None
+                    browser_frame_id = last_browser_frame_id
 
-            if self._cap is None or not self._cap.isOpened():
-                width = int(config["frame_width"])
-                height = int(config["frame_height"])
-                msg = self._capture_error or "Webcam no disponible."
-                frame = make_info_frame(msg, width, height)
-                time.sleep(0.1)
-                self._publish_frame(frame)
-                continue
+            if frame is None:
+                self._open_capture_if_needed(config)
 
-            ret, frame = self._cap.read()
-            if not ret or frame is None:
-                width = int(config["frame_width"])
-                height = int(config["frame_height"])
-                frame = make_info_frame("Error leyendo la webcam.", width, height)
-                time.sleep(0.05)
-                self._publish_frame(frame)
-                continue
+                if self._cap is None or not self._cap.isOpened():
+                    width = int(config["frame_width"])
+                    height = int(config["frame_height"])
+                    msg = self._capture_error or "Webcam no disponible."
+                    frame = make_info_frame(msg, width, height)
+                    time.sleep(0.1)
+                    self._publish_frame(frame)
+                    continue
+
+                ret, frame = self._cap.read()
+                if not ret or frame is None:
+                    width = int(config["frame_width"])
+                    height = int(config["frame_height"])
+                    frame = make_info_frame("Error leyendo la webcam.", width, height)
+                    time.sleep(0.05)
+                    self._publish_frame(frame)
+                    continue
+            else:
+                last_browser_frame_id = browser_frame_id
 
             self._frame_index += 1
             n = max(1, int(config["process_every_n_frames"]))
@@ -299,8 +300,8 @@ class CameraWorker:
                         face_bgr = frame[y1:y2, x1:x2]
                         face_pixels = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
 
-                    embedding = get_embedding(self._facenet, face_pixels)
-                    if embedding is None:
+                    embedding = get_embedding(self._facenet, DEVICE, face_pixels)
+                    if embedding is None or len(embedding) == 0:
                         continue
 
                     emb = embedding.reshape(1, -1)
@@ -312,16 +313,19 @@ class CameraWorker:
                     self._cached_predictions.append((x1, y1, x2, y2, label, conf))
 
             # Draw cached predictions on every frame
+            draw_color_rgb = get_color(config["draw_color"])
+            draw_color_bgr = draw_color_rgb[::-1]  # OpenCV uses BGR
+            draw_thick = int(config["draw_thickness"])
             for (x1, y1, x2, y2, label, conf) in self._cached_predictions:
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), draw_color_bgr, draw_thick)
                 cv2.putText(
                     frame,
                     "%s (%.2f)" % (label, conf),
                     (x1, max(0, y1 - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.8,
-                    (0, 255, 0),
-                    2,
+                    draw_color_bgr,
+                    draw_thick,
                 )
 
             # FPS overlay (display FPS)
@@ -338,8 +342,8 @@ class CameraWorker:
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
-                (0, 255, 0),
-                2,
+                draw_color_bgr,
+                draw_thick,
             )
 
             self._publish_frame(frame)
@@ -356,6 +360,12 @@ class CameraWorker:
 
 
 WORKER = CameraWorker()
+
+
+def decode_frame_bytes(raw_bytes):
+    np_buffer = np.frombuffer(raw_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
+    return frame
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -435,6 +445,22 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(b"Not found", "text/plain; charset=utf-8", status=404)
 
     def do_POST(self):
+        if self.path == "/api/frame":
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length > 0 else b""
+            if not raw:
+                self._send_json({"error": "Empty frame"}, status=400)
+                return
+
+            frame = decode_frame_bytes(raw)
+            if frame is None:
+                self._send_json({"error": "Invalid image data"}, status=400)
+                return
+
+            WORKER.submit_frame(frame)
+            self._send_json({"ok": True})
+            return
+
         if self.path == "/api/params":
             payload = self._read_json()
             if payload is None or not isinstance(payload, dict):
@@ -452,14 +478,15 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Local webcam face-recognition web app (MJPEG)")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
     WORKER.start()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    url = "http://%s:%d/" % (args.host, args.port)
+    display_host = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
+    url = "http://%s:%d/" % (display_host, args.port)
     print("Serving on %s" % url)
 
     try:
