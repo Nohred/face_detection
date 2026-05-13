@@ -7,24 +7,23 @@
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <header class="header">
+      <header class="header">
       <div>
         <h1>Webcam Face Recognition</h1>
-        <p class="sub">Cámara del navegador • Procesamiento en el servidor</p>
+        <p class="sub">Procesamiento y captura en el servidor</p>
       </div>
     </header>
 
     <main class="layout">
       <section class="video">
-        <div class="streamGrid">
-          <article class="streamCard">
-            <div class="streamLabel">Cámara del navegador</div>
+        <div class="streamGrid singleStream">
+          <article class="streamCard" style="display: none;">
+            <div class="streamLabel">Cámara del navegador (Oculta)</div>
             <video id="cameraPreview" autoplay playsinline muted></video>
           </article>
-
           <article class="streamCard">
             <div class="streamLabel">Vista procesada</div>
-            <img id="stream" src="/video" alt="Webcam stream" />
+            <img id="stream" src="/video" alt="Webcam stream" style="width: 100%; height: auto;" />
           </article>
         </div>
       </section>
@@ -76,13 +75,13 @@
           <p id="status" class="status" role="status"></p>
         </form>
 
-        <details class="help">
+        <!-- <details class="help">
           <summary>Pre-set</summary>
           <div class="helpBody">
             <p><b>MTCNN</b>: Red neuronal muy precisa pero lenta.</p>
             <p><b>Haar</b>: Algoritmo clásico, muy rápido pero menos preciso.</p>
           </div>
-        </details>
+        </details> -->
       </section>
     </main>
 
@@ -155,6 +154,7 @@
         if (!cameraStream || sendingFrame) return;
 
         const video = els.cameraPreview;
+        // Only proceed if video is ready
         if (!video.videoWidth || !video.videoHeight) return;
 
         sendingFrame = true;
@@ -192,6 +192,7 @@
               facingMode: 'user',
               width: { ideal: 640 },
               height: { ideal: 480 },
+              frameRate: { ideal: 30 }
             },
             audio: false,
           });
@@ -203,11 +204,12 @@
             clearInterval(captureTimer);
           }
 
+          // Send to server periodically (~30 fps)
           captureTimer = setInterval(() => {
             sendCurrentFrame().catch((error) => {
               setStatus(String(error), true);
             });
-          }, 180);
+          }, 33);
 
           setStatus('Cámara del navegador activa');
         } catch (error) {

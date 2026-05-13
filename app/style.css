@@ -60,7 +60,11 @@ body {
 .streamGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 16px;
+}
+
+.streamGrid.singleStream {
+  grid-template-columns: 1fr;
 }
 
 .streamCard {

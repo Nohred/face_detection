@@ -153,11 +153,6 @@ class CameraWorker:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except Exception:
-                pass
 
     def get_config(self):
         with self._lock:
@@ -179,45 +174,6 @@ class CameraWorker:
             if self._frame_id == last_frame_id:
                 self._cond.wait(timeout=timeout)
             return self._frame_id, self._latest_jpeg
-
-    def _open_capture_if_needed(self, config):
-        desired = (config["camera_index"], config["frame_width"], config["frame_height"], config["capture_fps"])
-        if self._cap is not None and self._cap_settings == desired and self._cap.isOpened():
-            return
-
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except Exception:
-                pass
-            self._cap = None
-
-        index = config["camera_index"]
-        if index is None:
-            index = find_camera_index()
-
-        if index is None:
-            self._capture_error = "No se pudo abrir la webcam (índice auto)."
-            self._cap_settings = desired
-            return
-
-        cap = cv2.VideoCapture(index)
-        if not cap.isOpened():
-            self._capture_error = "No se pudo abrir la webcam (índice=%s)." % index
-            self._cap_settings = desired
-            try:
-                cap.release()
-            except Exception:
-                pass
-            return
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(config["frame_width"]))
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(config["frame_height"]))
-        cap.set(cv2.CAP_PROP_FPS, int(config["capture_fps"]))
-
-        self._cap = cap
-        self._cap_settings = desired
-        self._capture_error = None
 
     def _detect_faces(self, frame_bgr, config):
         backend = config["face_detector"]
@@ -248,25 +204,15 @@ class CameraWorker:
                     browser_frame_id = last_browser_frame_id
 
             if frame is None:
-                self._open_capture_if_needed(config)
-
-                if self._cap is None or not self._cap.isOpened():
+                if last_browser_frame_id == 0:
                     width = int(config["frame_width"])
                     height = int(config["frame_height"])
-                    msg = self._capture_error or "Webcam no disponible."
-                    frame = make_info_frame(msg, width, height)
+                    info_frame = make_info_frame("Esperando camara del navegador...", width, height)
                     time.sleep(0.1)
-                    self._publish_frame(frame)
-                    continue
-
-                ret, frame = self._cap.read()
-                if not ret or frame is None:
-                    width = int(config["frame_width"])
-                    height = int(config["frame_height"])
-                    frame = make_info_frame("Error leyendo la webcam.", width, height)
+                    self._publish_frame(info_frame)
+                else:
                     time.sleep(0.05)
-                    self._publish_frame(frame)
-                    continue
+                continue
             else:
                 last_browser_frame_id = browser_frame_id
 
