@@ -31,7 +31,7 @@ FACENET_MODEL_PATH = PROJECT_DIR / "model" / "facenet_keras.h5"
 CLASSIFIER_PATH = PROJECT_DIR / "model" / "face_classifier.joblib"
 LABEL_ENCODER_PATH = PROJECT_DIR / "model" / "label_encoder.joblib"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+IMAGE_SIZE = 160  # MTCNN output size
 
 def _clamp_float(value, lo, hi, default):
     try:
@@ -132,7 +132,7 @@ class CameraWorker:
             raise RuntimeError("Failed to load OpenCV Haar cascade.")
 
         try:
-            self._mtcnn = MTCNN(keep_all=True, device=DEVICE)
+            self._mtcnn = MTCNN(image_size=IMAGE_SIZE, margin=20, min_face_size=40,keep_all=True, device=DEVICE, post_process=False)
         except Exception:
             self._mtcnn = None
 

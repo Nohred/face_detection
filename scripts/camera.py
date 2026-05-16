@@ -9,7 +9,7 @@ import time
 import tensorflow as tf
 
 # Initialize camera
-camera_index = 1
+camera_index = 2
 cap = cv2.VideoCapture(camera_index)
 
 # Initialize GPU
@@ -19,6 +19,7 @@ device = (torch.device('cuda') if torch.cuda.is_available() else torch.device('c
 FACE_DETECTOR_BACKEND = 'mtcnn'  # mtcnn | haar
 MAX_FACES = 2
 PROCESS_EVERY_N_FRAMES = 1 
+IMAGE_SIZE = 160  # MTCNN output size
 
 # Color for drawing bounding boxes and labels
 color = get_color("#EEFF00")  # Green for recognized faces
@@ -29,7 +30,9 @@ if FACE_DETECTOR_BACKEND == 'haar':
     detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 else:
     FACE_DETECTOR_BACKEND = 'mtcnn'
-    detector = MTCNN(keep_all=True, device=device)
+    # detector = MTCNN(keep_all=True, device=device)
+    detector = MTCNN(image_size=IMAGE_SIZE, margin=20, min_face_size=40,keep_all=True, device=device, post_process=False)
+
 
 
 # Base directory
