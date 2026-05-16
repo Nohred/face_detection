@@ -1,6 +1,6 @@
 # Face Detection and Recognition System
 
-A web-based face detection and recognition application that processes video streams from a web browser camera feed through a backend server equipped with machine learning models.
+A web-based face detection and recognition application where the browser captures webcam frames, the backend (FastAPI) returns face detections as JSON, and the client draws bounding boxes on a JavaScript canvas.
 
 ## Project Structure
 
@@ -104,7 +104,7 @@ This will generate new `face_classifier.joblib` and `label_encoder.joblib` files
 
 ### Interface
 
-- The main display shows the processed video stream with face detections
+- The main display shows a canvas with the current frame and client-side bounding boxes
 - Configuration panel allows real-time adjustment of parameters
 - Status messages indicate system state and errors
 
@@ -114,8 +114,8 @@ This will generate new `face_classifier.joblib` and `label_encoder.joblib` files
 
 Main web server handling:
 - HTTP requests for index page and styling
-- Real-time video stream processing
-- Face detection and classification
+- Per-frame processing via individual HTTP requests
+- Face detection and classification (returns JSON with bbox + name + probability)
 - Configuration API endpoints
 
 ### scripts/functions.py

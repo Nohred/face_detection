@@ -8,7 +8,8 @@ def detect_faces(detector, image, backend="mtcnn", min_confidence=0):
 
     if backend == "mtcnn":
         # detector.detect from facenet-pytorch returns boxes and probabilities
-        boxes, probs = detector.detect(image)
+        with torch.no_grad():
+            boxes, probs = detector.detect(image)
         results = []
         if boxes is not None:
             for box, prob in zip(boxes, probs):

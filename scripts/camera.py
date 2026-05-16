@@ -35,15 +35,18 @@ else:
 
 
 
-# Base directory
-base_dir = os.path.join(os.getcwd())
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Load the trained classifier
-classifier_path = os.path.join(base_dir, 'model', 'face_classifier.joblib')
+classifier_path = os.path.join(base_dir, 'models', 'face_classifier.joblib')
+if not os.path.exists(classifier_path):
+    classifier_path = os.path.join(base_dir, 'model', 'face_classifier.joblib')
 classifier = joblib.load(classifier_path)
 
 # Load the label encoder
-label_encoder_path = os.path.join(base_dir, 'model', 'label_encoder.joblib')
+label_encoder_path = os.path.join(base_dir, 'models', 'label_encoder.joblib')
+if not os.path.exists(label_encoder_path):
+    label_encoder_path = os.path.join(base_dir, 'model', 'label_encoder.joblib')
 label_encoder = joblib.load(label_encoder_path)
 
 # Load FaceNet model
