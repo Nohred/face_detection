@@ -1,0 +1,52 @@
+server {
+  listen 80;
+  listen [::]:80;
+  server_name ${DOMAIN};
+
+  client_max_body_size 25m;
+
+  location ^~ /.well-known/acme-challenge/ {
+    root /var/www/certbot;
+  }
+
+  location / {
+    return 301 https://$host$request_uri;
+  }
+}
+
+server {
+  listen 443 ssl http2;
+  listen [::]:443 ssl http2;
+  server_name ${DOMAIN};
+
+  client_max_body_size 25m;
+
+  ssl_certificate     /etc/letsencrypt/live/${DOMAIN}-0001/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}-0001/privkey.pem;
+
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_session_cache shared:SSL:10m;
+  ssl_session_timeout 10m;
+
+  add_header Strict-Transport-Security "max-age=31536000" always;
+
+  location ^~ /.well-known/acme-challenge/ {
+    root /var/www/certbot;
+  }
+
+  location /api/ {
+    proxy_pass http://app:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 60s;
+  }
+
+  location / {
+    root /usr/share/nginx/html;
+    index index.html;
+    try_files $uri $uri/ /index.html;
+  }
+}

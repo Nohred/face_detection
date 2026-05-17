@@ -2,7 +2,6 @@ import hashlib
 import logging
 import os
 import shutil
-import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -29,27 +28,40 @@ logger = logging.getLogger("app")
 
 
 APP_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = APP_DIR.parent
-if str(PROJECT_DIR) not in sys.path:
-    sys.path.insert(0, str(PROJECT_DIR))
+
+
+def _resolve_path(env_key: str, default: Path) -> Path:
+    value = (os.environ.get(env_key) or "").strip()
+    if not value:
+        return default
+    p = Path(value)
+    if not p.is_absolute():
+        p = APP_DIR / p
+    return p
+
 
 from scripts.functions import detect_faces, get_embedding
-from scripts.embeddings_store import EmbeddingsStore, normalize_name, person_id_from_name, utc_now_iso
+from scripts.embeddings_store import (
+    EmbeddingsStore,
+    normalize_name,
+    person_id_from_name,
+    utc_now_iso,
+)
 
 
-STATIC_DIR = APP_DIR / "static"
+STATIC_DIR = _resolve_path("APP_STATIC_DIR", APP_DIR / "static")
 INDEX_HTML_PATH = STATIC_DIR / "index.html"
 STYLE_CSS_PATH = STATIC_DIR / "style.css"
 
-DATA_DIR = PROJECT_DIR / "data"
-RAW_DIR = DATA_DIR / "raw"
-ALIGNED_DIR = DATA_DIR / "aligned"
-EMBEDDINGS_DIR = DATA_DIR / "embeddings"
-EMBEDDINGS_CSV_PATH = EMBEDDINGS_DIR / "embeddings.csv"
+DATA_DIR = _resolve_path("APP_DATA_DIR", APP_DIR / "data")
+EMBEDDINGS_CSV_PATH = _resolve_path(
+    "APP_EMBEDDINGS_CSV_PATH", DATA_DIR / "embeddings" / "embeddings.csv"
+)
+EMBEDDINGS_DIR = EMBEDDINGS_CSV_PATH.parent
 LEGACY_EMBEDDINGS_CSV_PATH = DATA_DIR / "embeddings.csv"  # old schema (class, embedding)
 
-MODELS_DIR = PROJECT_DIR / "models"
-LEGACY_MODELS_DIR = PROJECT_DIR / "model"
+MODELS_DIR = _resolve_path("APP_MODELS_DIR", APP_DIR / "models")
+LEGACY_MODELS_DIR = _resolve_path("APP_LEGACY_MODELS_DIR", APP_DIR / "model")
 
 CLASSIFIER_PATH = MODELS_DIR / "face_classifier.joblib"
 LABEL_ENCODER_PATH = MODELS_DIR / "label_encoder.joblib"
@@ -138,15 +150,13 @@ STATE = InferenceState()
 
 def _ensure_dirs() -> None:
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
-    ALIGNED_DIR.mkdir(parents=True, exist_ok=True)
     EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _relpath(path: Path) -> str:
     try:
-        return path.relative_to(PROJECT_DIR).as_posix()
+        return path.relative_to(APP_DIR).as_posix()
     except Exception:
         return path.as_posix()
 
@@ -226,7 +236,7 @@ def _best_effort_map_legacy_image_paths(class_name: str, expected_count: int) ->
     if MTCNN_DETECTOR is None:
         return None
 
-    images_dir = PROJECT_DIR / "images" / class_name
+    images_dir = APP_DIR / "images" / class_name
     if not images_dir.exists() or not images_dir.is_dir():
         return None
 
@@ -472,6 +482,11 @@ def api_status():
     }
 
 
+@app.get("/api/health")
+def api_health():
+    return {"status": "ok"}
+
+
 @app.get("/api/params")
 def get_params():
     with STATE.lock:
@@ -543,10 +558,6 @@ async def api_register(name: str = Form(...), images: list[UploadFile] = File(..
         raise HTTPException(status_code=400, detail="At least one image is required")
 
     pid = person_id_from_name(clean_name)
-    raw_person_dir = RAW_DIR / pid
-    aligned_person_dir = ALIGNED_DIR / pid
-    raw_person_dir.mkdir(parents=True, exist_ok=True)
-    aligned_person_dir.mkdir(parents=True, exist_ok=True)
 
     accepted_rows: list[dict] = []
     rejected: list[dict] = []
@@ -564,31 +575,27 @@ async def api_register(name: str = Form(...), images: list[UploadFile] = File(..
         except Exception as e:
             rejected.append({"filename": up.filename, "reason": f"read_failed: {e}"})
             continue
+        finally:
+            try:
+                await up.close()
+            except Exception:
+                pass
 
         if not payload:
             rejected.append({"filename": up.filename, "reason": "empty_file"})
             continue
 
         digest = _sha256_hex(payload)
-        aligned_path = aligned_person_dir / f"{digest}.jpg"
-        aligned_rel = _relpath(aligned_path)
-        if aligned_rel in seen_in_request or EMBEDDINGS_STORE.already_processed(aligned_rel):
+        image_id = f"upload://{pid}/{digest}.jpg"
+        if image_id in seen_in_request or EMBEDDINGS_STORE.already_processed(image_id):
             skipped += 1
             continue
-        seen_in_request.add(aligned_rel)
+        seen_in_request.add(image_id)
 
         frame_bgr = decode_frame_bytes(payload)
         if frame_bgr is None:
             rejected.append({"filename": up.filename, "reason": "invalid_image"})
             continue
-
-        raw_path = raw_person_dir / f"{digest}.jpg"
-        if not raw_path.exists():
-            try:
-                cv2.imwrite(str(raw_path), frame_bgr)
-            except Exception as e:
-                rejected.append({"filename": up.filename, "reason": f"raw_save_failed: {e}"})
-                continue
 
         img_h, img_w = frame_bgr.shape[:2]
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -618,12 +625,6 @@ async def api_register(name: str = Form(...), images: list[UploadFile] = File(..
             rejected.append({"filename": up.filename, "reason": "empty_face_crop"})
             continue
 
-        try:
-            cv2.imwrite(str(aligned_path), face_bgr)
-        except Exception as e:
-            rejected.append({"filename": up.filename, "reason": f"aligned_save_failed: {e}"})
-            continue
-
         face_rgb = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
         embedding = get_embedding(FACENET, DEVICE, face_rgb)
         if embedding is None or len(embedding) == 0:
@@ -639,7 +640,7 @@ async def api_register(name: str = Form(...), images: list[UploadFile] = File(..
         row = {
             "person_id": pid,
             "name": clean_name,
-            "image_path": aligned_rel,
+            "image_path": image_id,
             "created_at": utc_now_iso(),
         }
         for i, v in enumerate(embedding.tolist()):
