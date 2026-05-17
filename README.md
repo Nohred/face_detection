@@ -36,21 +36,10 @@ Ensure the following files exist in the `model/` directory:
 
 ## Running the Server
 
-Start the web application server:
-
-```bash
-python app/server.py
+The web application is running on
 ```
-
-By default, the server listens on `http://0.0.0.0:8000`
-
-To run on a specific host and port:
-
-```bash
-python app/server.py --host 127.0.0.1 --port 8080
+https://34.231.94.5.nip.io/
 ```
-
-Access the application in your browser at `http://localhost:8000`
 
 ## Running Scripts
 
@@ -124,11 +113,4 @@ Core utility functions:
 - `detect_faces()` - Face detection using Haar or MTCNN
 - `get_embedding()` - Extract FaceNet embeddings
 - `get_color()` - Convert hex colors to OpenCV BGR format
-
-## Security & cleanup
-
-- **Removed sensitive and large files from the repository:** certificate files under `app/certbot/conf/live/` and trained model artifacts (`models/`, `model/`, `app/models/`) have been removed from git and are now ignored via `.gitignore` to avoid leaking private keys and large binaries.
-- **How to restore models or certificates:** copy the files from the deployed EC2 instance or regenerate models by running the training script `scripts/training.py` (see "Train the Classifier" above). For certificates, run the `app/certbot/init-letsencrypt.sh` script in the deployment environment.
-
-If you need me to securely remove these files from the git history as well, I can help with that (it rewrites history and requires force-pushing). 
 
