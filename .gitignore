@@ -2,3 +2,29 @@ __pycache__
 .vscode
 pruebas.ipynb
 requirements.txt
+.env
+.DS_Store
+# Certificates and letsencrypt config
+app/certbot/conf/live/
+app/certbot/conf/archive/
+app/certbot/conf/accounts/
+*.pem
+*.key
+*.crt
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model artifacts
+*.joblib
+model/
+models/
+app/models/
+
+# Build / distribution
+dist/
+build/
