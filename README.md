@@ -125,3 +125,10 @@ Core utility functions:
 - `get_embedding()` - Extract FaceNet embeddings
 - `get_color()` - Convert hex colors to OpenCV BGR format
 
+## Security & cleanup
+
+- **Removed sensitive and large files from the repository:** certificate files under `app/certbot/conf/live/` and trained model artifacts (`models/`, `model/`, `app/models/`) have been removed from git and are now ignored via `.gitignore` to avoid leaking private keys and large binaries.
+- **How to restore models or certificates:** copy the files from the deployed EC2 instance or regenerate models by running the training script `scripts/training.py` (see "Train the Classifier" above). For certificates, run the `app/certbot/init-letsencrypt.sh` script in the deployment environment.
+
+If you need me to securely remove these files from the git history as well, I can help with that (it rewrites history and requires force-pushing). 
+
