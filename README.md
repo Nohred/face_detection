@@ -2,6 +2,8 @@
 
 A web-based face detection and recognition application where the browser captures webcam frames, the backend (FastAPI) returns face detections as JSON, and the client draws bounding boxes on a JavaScript canvas.
 
+![alex example](images/alex.jpeg)
+
 ## Project Structure
 
 - `app/` - Web application files (server, HTML, CSS)
